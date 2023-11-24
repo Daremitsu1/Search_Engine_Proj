@@ -9,11 +9,51 @@ import os, random, spacy
 import pandas as pd
 import pickle
 import json
+import imageio
+import requests
+# Import tensorflow related libraries
+import tensorflow
+from tensorflow.keras.preprocessing.image import img_to_array
+from tensorflow.keras.preprocessing.image import load_img
+from tensorflow.keras.models import load_model
+import urllib.parse
+from PIL import Image
+import cv2
+import numpy as np
 
-# Lets load the model for use now
-with open("ner_model.pickle", "rb") as f:
+# 2. Generate Folder Paths
+zip_path = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/ZipFolderAbsolutePath/'
+unzip_destination_folder = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/UnZipFolderAbsolutePath/TempFolder/'
+property_preservation_ingested_folder = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/UnZipFolderAbsolutePath/PropertyPreservation/IngestedFiles'
+doc_indexing_ingested_folder = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/UnZipFolderAbsolutePath/DocumentIndexingExtraction/IngestedFiles'
+property_preservation_segregated_folder = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/UnZipFolderAbsolutePath/PropertyPreservation/Segregated Images'
+doc_indexing_ocrtext_folder = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/UnZipFolderAbsolutePath/DocumentIndexingExtraction/OCR_Text'
+
+# 3. List of Labels
+# Level 1 Images
+label1_img_seg_dict = {'Door Tasks': 0, 'Lawn Maintenance': 1}
+label1_img_seg_dict_reverse = {0:'Door Tasks', 1:'Lawn Maintenance'}
+# Door Segregation Images
+door_img_seg_dict = {'Install Door Armor - 8955': 0, 'Install Exterior Door with Frame - 8953': 1, 'Repair Door Frame - 9173': 2, 'Repaired Replace Overhead Garage Door - 2215 3047': 3, 'Replaced Door - 0514 8952': 4}
+door_img_seg_dict_reverse = {0:'Install Door Armor - 8955', 1:'Install Exterior Door with Frame - 8953', 2:'Repair Door Frame - 9173', 3:'Repaired Replace Overhead Garage Door - 2215 3047', 4:'Replaced Door - 0514 8952'}
+# Lawn Maintenance Segregation Images
+grass_img_seg_dict = {'Initial Grass Cut - 2501': 0, 'Remove Vines - 2575': 1, 'Trim Shrubs - 2606': 2, 'Trim Trees - 9164': 3}
+grass_img_seg_dict_reverse = {0:'Initial Grass Cut - 2501', 1:'Remove Vines - 2575', 2:'Trim Shrubs - 2606', 3:'Trim Trees - 9164'}
+# Before After During Segregation Labels
+label_dict = {'After': 0,'Before': 1,'During': 2}
+label_dict_reverse = {0:'After',1:'Before',2:'During'}
+
+# List of Models
+label2_image_segregation_lawnmaintenance = load_model('models/property_preservation/models/grass_image_classification.h5')
+model_label1_seg = load_model('D:/Python Projects/Honda-Invoice/NexDeck/models/prop_preserv/pp_image_segregation_label1.h5')
+model_door_seg = load_model('D:/Python Projects/Honda-Invoice/NexDeck/models/prop_preserv/pp_image_segregation_doortask.h5')
+model_grass_seg = load_model('D:/Python Projects/Honda-Invoice/NexDeck/models/prop_preserv/pp_image_segregation_lawnmaintenancetask.h5')
+
+# Lets load the spaCy model for use now
+with open("doc_extract.pickle", "rb") as f:
     new_ner = pickle.load(f)
 
+# spaCy color visualization 
 def color_gen():
     random_number = random.randint(0,16777215) #16777215 ~= 256x256x256(R,G,B)
     hex_number = format(random_number, 'x')
@@ -22,80 +62,6 @@ def color_gen():
 
 colors = {ent.upper():color_gen() for ent in new_ner.entities}
 options = {"ents":[ent.upper() for ent in new_ner.entities], "colors":colors}
-
-# Define Zip File Location
-def check_zip_file(path):
-    zip_folders = [file for file in os.listdir(path) if file.endswith('.zip')]
-
-    if not zip_folders:
-        print(f"No zip folders found in {path}")
-    else:
-        name_zip_folder = zip_folders[0]
-        zip_file_path = path+'/'+name_zip_folder
-
-    return f"Zip folder found in {path} and Name of the Zip folder {name_zip_folder}"
-
-# Define Unzip Methodology
-def unzip_files(path, unzip_destination_folder):
-    zip_folders = [file for file in os.listdir(path) if file.endswith('.zip')]
-
-    if not zip_folders:
-        print(f"No zip folders found in {path}")
-    else:
-        name_zip_folder = zip_folders[0]
-
-    zip_file_path = Path(path+'/'+name_zip_folder)
-    
-    # Create UnzipFolderShipment if it doesn't exist
-    destination_path = os.path.join(unzip_destination_folder, 'UnzipFolderShipment')
-    os.makedirs(destination_path, exist_ok=True)
-
-    # Create DocumentIndexingExtraction and PropertyPreservation folders
-    document_extraction_folder = os.path.join(destination_path, 'DocumentIndexingExtraction')
-    property_preservation_folder = os.path.join(destination_path, 'PropertyPreservation')
-
-    os.makedirs(document_extraction_folder, exist_ok=True)
-    os.makedirs(property_preservation_folder, exist_ok=True)
-
-    # Perform the unzip
-    with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
-        zip_ref.extractall(destination_path)
-
-    # Move files to appropriate folders
-    move_files_to_folders(destination_path, document_extraction_folder, property_preservation_folder)
-
-    # Remove the original zip folder
-    shutil.rmtree(zip_file_path)
-
-    print(f"Successfully unzipped '{name_zip_folder}' and organized files.")
-
-# Define moving files to folders
-def move_files_to_folders(source_folder, document_extraction_folder, property_preservation_folder):
-    files = os.listdir(source_folder)
-
-    for file in files:
-        file_path = os.path.join(source_folder, file)
-
-        if file.lower().endswith(('.pdf', '.tif')):
-            destination_folder = document_extraction_folder
-        else:
-            destination_folder = property_preservation_folder
-
-        # Create the shipment-specific folder inside the destination
-        shipment_folder = os.path.join(destination_folder, file.split('.')[0])
-        os.makedirs(shipment_folder, exist_ok=True)
-
-        # Construct the destination path
-        destination_path = os.path.join(shipment_folder, file)
-
-        # Copy the file to the shipment-specific folder
-        shutil.copy(file_path, destination_path)
-
-        # Remove the original file
-        os.remove(file_path)
-
-    print("Successfully organized files into DocumentIndexingExtraction and PropertyPreservation folders.")
-
 
 # Streamlit UI
 st.set_page_config(page_title="NexDeck", page_icon="https://nexval.com/wp-content/uploads/2021/06/NEX_WEB_LOGO_NEXVAL.png", layout="wide")
@@ -111,49 +77,190 @@ if choice == 'Ingestion':
     st.title('File Ingestion')
 
     # Either user uploads zips from a desired location...
-    uploaded_file = st.file_uploader('Choose zip files to be uploaded', type=['zip'], accept_multiple_files=True)
+    uploaded_zip_folders = st.file_uploader('Choose zip files to be uploaded', type=['.zip', '.rar'], accept_multiple_files=True)
 
     # ...empty space for OR...
     middle_space = st.empty()
     middle_space.markdown('<p style="text-align:center; font-size:20px;">OR</p>', unsafe_allow_html=True)
 
     # ...or from entered location
-    extraction_location = st.text_input('Enter the directory-path for extraction:')
+    zip_path = st.text_input('Enter the directory-path for extraction:')
 
     # Check if the user uploaded a file or entered a location
-    if uploaded_file:
-        # Temporary directory to store the uploaded zip files
-        temp_dir = "temp_uploaded_files"
-        os.makedirs(temp_dir, exist_ok=True)
+    if uploaded_zip_folders:
+        zip_folders_name = [file.name for file in uploaded_zip_folders] 
+        zip_folder_paths = [zip_path+'/'+zip_folder_name for zip_folder_name in zip_folders_name]
+        print("List of zip files to be moved:", zip_folder_paths)
+        
+        for zip_folder_path in zip_folder_paths:
+            print("Attempting to move file:", zip_folder_path)
+            
+            # Print the list of files in the directory
+            print("Files in the directory:", os.listdir(zip_folder_path))
+            print("Attempting to move file:", zip_folder_path)
+            destination_directory = os.path.dirname(zip_folder_path)
+            if not os.path.exists(destination_directory):
+                os.makedirs(destination_directory)
+            
+            with zipfile.ZipFile(zip_folder_path, 'r') as zip_ref:
+                zip_ref.extractall(unzip_destination_folder)
+                st.write('Successfully extracted ZipFile')
 
-        # Save uploaded files to the temporary directory
-        for file in uploaded_file:
-            with open(os.path.join(temp_dir, file.name), "wb") as f:
-                f.write(file.getbuffer())
+        folders_newly_arrived = os.listdir(unzip_destination_folder)
+        print("folders_newly_arrived :", folders_newly_arrived)
+        for folder in folders_newly_arrived:
+            files = os.listdir(unzip_destination_folder+'/'+folder)
+            print("files_newly_arrived :", files)
+            shipment_name = folder
+            print("shipment_name :", shipment_name)
+            for file in files:
+                file_path = unzip_destination_folder+'/'+folder+'/'+file
+                if file_path.lower().endswith(('.pdf', '.tif')):
+                    user_name = "NEXVAL123"
+                    license_code = "0D06A12C-1134-484F-8F39-1D11F9B49281"
+                    API_ENDPOINT = "http://147.135.15.63/restservices/processDocument?gettext=true&newline=1&getwords=true&ocroption=3&ocrtype=11&outputformat=txt"
+                    with open(file_path, 'rb') as image_file:
+                        image_data = image_file.read()
+                    try:
+                        r = requests.post(url=API_ENDPOINT, data=image_data, auth=(user_name, license_code), timeout=300)
+                        if r.status_code == 401:
+                            # Please provide valid username and license code
+                            print("Unauthorized request")
+                            
+                        # Decode Output response
+                        jobj = json.loads(r.content)
 
-        # Display information about the uploaded files
-        st.info(f"Uploaded {len(uploaded_file)} file(s): {', '.join([file.name for file in uploaded_file])}")
+                        ocrError = str(jobj["ErrorMessage"])
 
-        # Perform zip file extraction and classification
-        st.info(check_zip_file(path=temp_dir))
-        unzip_files(path=temp_dir, unzip_destination_folder='D:/Python Projects/NexDeck/NexDeck/Airflow/UnZipFolderShipment/NewlyArrivedUnZipShipment')
+                        if ocrError != '':
+                            # Error occurs during recognition
+                            print("Recognition Error: " + ocrError)
 
-        # Display success message
-        st.success("File Ingestion, Unzipping, and Organization completed successfully!")
+                        content = ""
+                        page = 0
+                        for ocr_text in jobj["OCRText"][0]:
+                            content = content + " " + ocr_text
+                            page = page + 1
 
-        # Cleanup: Remove temporary directory
-        shutil.rmtree(temp_dir)
+                    except:
+                        import time
+                        time.sleep(6)
+                        
 
-    elif extraction_location:
-        # Perform zip file extraction and classification from the specified location
-        st.info(check_zip_file(path=extraction_location))
-        unzip_files(path=extraction_location, unzip_destination_folder='D:/Python Projects/NexDeck/NexDeck/Airflow/UnZipFolderShipment/NewlyArrivedUnZipShipment')
+                    # Check if the extracted text is not empty
+                    if bool(content.strip()):
+                        print("It Is A Text File")
+                        message = st.empty()
+                        message.text(f"{file} is a Text File")
+                        if os.path.exists(doc_indexing_ingested_folder+'/'+shipment_name):
+                            
+                            shutil.copy(file_path, doc_indexing_ingested_folder+'/'+shipment_name)
+                        else:
+                            os.mkdir(doc_indexing_ingested_folder+'/'+shipment_name)
+                            shutil.copy(file_path, doc_indexing_ingested_folder+'/'+shipment_name)
+                    else:
+                        print("It Is Not A Text File")
 
-        # Display success message
-        st.success(f"File Ingestion, Unzipping and Organization completed successfully for files in {extraction_location}.")
+                else:
+                    try:
+                        image = imageio.imread(file_path)
+                        print("It Is A Image File")
+                        message = st.empty()
+                        message.text(f"{file} is a Image File")
+                        if os.path.exists(property_preservation_ingested_folder+'/'+shipment_name):
+                            shutil.copy(file_path, property_preservation_ingested_folder+'/'+shipment_name)
+                        else:
+                            os.mkdir(property_preservation_ingested_folder+'/'+shipment_name)
+                            shutil.copy(file_path, property_preservation_ingested_folder+'/'+shipment_name)
+                    except Exception as e:
+                        print("It Is A Not Image File")
 
-        # Optional: Clear the input field after processing
-        extraction_location = ""
+
+    elif zip_path:
+        zip_folder_names = [file for file in os.listdir(zip_path) if file.endswith('.zip')]
+        if not zip_folder_names:
+            print(f"No zip folders found in {zip_path}")
+            st.write(f"No zip folders found in {zip_path}")
+        else:
+            zip_folder_paths = [os.path.join(zip_path, zip_folder_name) for zip_folder_name in zip_folder_names]
+            for zip_folder_path in zip_folder_paths:
+                destination_directory = os.path.dirname(zip_folder_path)
+                if not os.path.exists(destination_directory):
+                    os.makedirs(destination_directory)
+                
+                with zipfile.ZipFile(zip_folder_path, 'r') as zip_ref:
+                    zip_ref.extractall(unzip_destination_folder)
+                    st.info('Successfully extracted ZipFile')
+
+                folders_newly_arrived = os.listdir(unzip_destination_folder)
+                print("folders_newly_arrived :", folders_newly_arrived)
+                for folder in folders_newly_arrived:
+                    files = os.listdir(unzip_destination_folder+'/'+folder)
+                    print("files_newly_arrived :", files)
+                    shipment_name = folder
+                    print("shipment_name :", shipment_name)
+                    for file in files:
+                        file_path = unzip_destination_folder+'/'+folder+'/'+file
+                        if file_path.lower().endswith(('.pdf', '.tif')):
+                            user_name = "NEXVAL123"
+                            license_code = "0D06A12C-1134-484F-8F39-1D11F9B49281"
+                            API_ENDPOINT = "http://147.135.15.63/restservices/processDocument?gettext=true&newline=1&getwords=true&ocroption=3&ocrtype=11&outputformat=txt"
+                            with open(file_path, 'rb') as image_file:
+                                image_data = image_file.read()
+                            try:
+                                r = requests.post(url=API_ENDPOINT, data=image_data, auth=(user_name, license_code), timeout=300)
+                                if r.status_code == 401:
+                                    # Please provide valid username and license code
+                                    print("Unauthorized request")
+                                    
+                                # Decode Output response
+                                jobj = json.loads(r.content)
+
+                                ocrError = str(jobj["ErrorMessage"])
+
+                                if ocrError != '':
+                                    # Error occurs during recognition
+                                    print("Recognition Error: " + ocrError)
+
+                                content = ""
+                                page = 0
+                                for ocr_text in jobj["OCRText"][0]:
+                                    content = content + " " + ocr_text
+                                    page = page + 1
+
+                            except:
+                                import time
+                                time.sleep(6)
+                                
+
+                            # Check if the extracted text is not empty
+                            if bool(content.strip()):
+                                print("It Is A Text File")
+                                message = st.empty()
+                                message.text(f"{file} is a Text File")
+                                if os.path.exists(doc_indexing_ingested_folder+'/'+shipment_name):
+                                    
+                                    shutil.copy(file_path, doc_indexing_ingested_folder+'/'+shipment_name)
+                                else:
+                                    os.mkdir(doc_indexing_ingested_folder+'/'+shipment_name)
+                                    shutil.copy(file_path, doc_indexing_ingested_folder+'/'+shipment_name)
+                            else:
+                                print("It Is Not A Text File")
+
+                        else:
+                            try:
+                                image = imageio.imread(file_path)
+                                print("It Is A Image File")
+                                message = st.empty()
+                                message.text(f"{file} is a Image File")  
+                                if os.path.exists(property_preservation_ingested_folder+'/'+shipment_name):
+                                    shutil.copy(file_path, property_preservation_ingested_folder+'/'+shipment_name)
+                                else:
+                                    os.mkdir(property_preservation_ingested_folder+'/'+shipment_name)
+                                    shutil.copy(file_path, property_preservation_ingested_folder+'/'+shipment_name)
+                            except Exception as e:
+                                print("It Is A Not Image File")
+
 
 if choice == 'Visualization':
     st.title('Data Visualization')
@@ -163,14 +270,63 @@ if choice == 'Visualization':
 
     if sub_choice == 'DocumentIndexingExtraction':
         st.subheader('List of Documents')
-        directory_path = r'D:/Python Projects/NexDeck/NexDeck/Airflow/UnZipFolderShipment/DocumentIndexingExtraction/OCR_Text'
+        shipment_name = os.listdir(doc_indexing_ingested_folder)[0]
+        print('Shipment Name:', shipment_name)
+        doc_files = os.listdir(doc_indexing_ingested_folder+'/'+shipment_name)
+        if st.button('Generate Document OCRs'):
+            for doc_file in doc_files:
+                doc_file_path = doc_indexing_ingested_folder+'/'+shipment_name+'/'+doc_file
+                print("doc_file_path : ",doc_file_path)
+                if doc_file_path.lower().endswith(('.pdf', '.tif')):
+                    user_name = "NEXVAL123"
+                    license_code = "0D06A12C-1134-484F-8F39-1D11F9B49281"
+                    API_ENDPOINT = "http://147.135.15.63/restservices/processDocument?gettext=true&newline=1&getwords=true&ocroption=3&ocrtype=11&outputformat=txt"
+                    with open(doc_file_path, 'rb') as doc_image_file:
+                        print("doc_image_path : ",doc_image_file)
+                        doc_image_data = doc_image_file.read()
+                    try:
+                        r = requests.post(url=API_ENDPOINT, data=doc_image_data, auth=(user_name, license_code), timeout=300)
+                        if r.status_code == 401:
+                            # Please provide valid username and license code
+                            print("Unauthorized request")
+                            
+                        # Decode Output response
+                        jobj = json.loads(r.content)
+
+                        ocrError = str(jobj["ErrorMessage"])
+
+                        if ocrError != '':
+                            # Error occurs during recognition
+                            print("Recognition Error: " + ocrError)
+
+                        content = ""
+                        page = 0
+                        for ocr_text in jobj["OCRText"][0]:
+                            content = content + " " + ocr_text
+                            page = page + 1
+                        
+                        print(content)
+                        if os.path.exists(doc_indexing_ocrtext_folder+'/'+shipment_name):
+                            print(doc_indexing_ocrtext_folder+'/'+shipment_name+'/'+doc_file.split('.')[0]+'.txt')
+                            with open(doc_indexing_ocrtext_folder+'/'+shipment_name+'/'+doc_file.split('.')[0]+'.txt', 'w', encoding='utf-8') as docfile:
+                                docfile.write(content)
+                        else:
+                            os.mkdir(doc_indexing_ocrtext_folder+'/'+shipment_name)
+                            print(doc_indexing_ocrtext_folder+'/'+shipment_name+'/'+doc_file.split('.')[0]+'.txt')
+                            with open(doc_indexing_ocrtext_folder+'/'+shipment_name+'/'+doc_file.split('.')[0]+'.txt', 'w', encoding='utf-8') as docfile:
+                                docfile.write(content)
+                    except:
+                        import time
+                        time.sleep(6)
+
+        directory_path = doc_indexing_ocrtext_folder + '/' + shipment_name
         # Get the list of files in the directory
         file_list = os.listdir(directory_path)
         selected_file = st.selectbox("Select a file to visualize entities", file_list)
         
         if selected_file:
             st.write("You selected file:", selected_file)   
-            model_folder = os.path.join('models','invoice_reports')
+            model_folder = os.path.join('NexDeck','models','docindexextract')
             nlp = spacy.load(model_folder)
             
             file_path = os.path.join(directory_path, selected_file)
@@ -181,8 +337,415 @@ if choice == 'Visualization':
             ent_html = spacy.displacy.render(doc, jupyter=False, style='ent', options=options)
             st.markdown(ent_html, unsafe_allow_html=True)
 
+            # Extract Entities
+            results = new_ner.extract_entities([file_text])
+            df = pd.DataFrame(results)
+            
+            if df.empty:
+                st.warning("No entities extracted for the selected file.")
+            else:
+                df["Doc_Id"] = [selected_file]  # Add the filename to the DataFrame
+                
+            # Extract Entities for all files in the list
+            all_results = []
+            for file_name in file_list:
+                file_path = os.path.join(directory_path, file_name)
+                with open(file_path, 'r', encoding='utf-8') as file:
+                    file_text = file.read()
+                
+                results = new_ner.extract_entities([file_text])
+                #all_results.append(pd.DataFrame(results, columns=df.columns))
+            
+                df_result = pd.DataFrame(results, columns=df.columns)
+                
+                # Add the actual filename to the 'Doc_Id' column
+                df_result['Doc_Id'] = [file_name]
+
+                # Add 'Job_Id' column and fill it with the folder name
+                df_result['Job_Id'] = os.path.basename(directory_path)
+                
+                all_results.append(df_result)
+
+            # Concatenate results for all files into a single DataFrame
+            all_df = pd.concat(all_results, ignore_index=True)
+
+            # Remove the 'Filename' column
+            if 'Filename' in all_df.columns:
+                all_df = all_df.drop(columns=['Filename'])
+
+            # Reorder columns with 'Job_Id' and 'Doc_Id' as the first two columns
+            all_df = all_df[['Job_Id', 'Doc_Id'] + [col for col in all_df.columns if col not in ['Job_Id', 'Doc_Id']]]
+
+            # Save results to a csv
+            all_df.to_csv('NexDeck/results/index_extract.csv', index=False)
+
+            # Specify the directory path where you have write permissions
+            json_directory = 'D:/Python Projects/Honda-Invoice/NexDeck/NoSQL'
+
+            # Combine the directory path with the JSON filename
+            json_path = os.path.join(json_directory, 'index_extract.json')
+
+            # Save results to JSON
+            all_df.to_json(json_path, orient='records', lines=True)
+
+
     if sub_choice == 'PropertyPreservation':
         st.subheader('Segregated Images')
+        shipment_name = os.listdir(property_preservation_ingested_folder)[0]
+        image_files = os.listdir(property_preservation_ingested_folder+'/'+shipment_name)
+        count = 1
+        placeholder = st.empty()
+        if st.button('Segregate Images'):
+            for image_file in image_files:
+                image_file_path = property_preservation_ingested_folder+'/'+shipment_name+'/'+image_file
+                if image_file_path.lower().endswith(('.jpg', '.png','.jpeg','.JPEG','.PNG','.JPG','.Jpg','.Jpeg','.Png')):
+                    X_1 = cv2.imread(image_file_path)
+                    X_1 = cv2.resize(X_1,(210,210))
+                    X_1  = X_1.reshape((1,210,210,3))
+                    P_1 = model_label1_seg.predict(X_1)
+                    P_1 = np.argmax(P_1, axis=1)
+                    
+                    
+                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name):
+                        if label1_img_seg_dict_reverse[P_1[0]]=='Door Tasks':
+                            if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'):
+                                X_2 = cv2.imread(image_file_path)
+                                X_2 = cv2.resize(X_2,(224,224))
+                                X_2  = X_2.reshape((1,224,224,3))
+                                P_2 = model_door_seg.predict(X_2)
+                                P_2 = np.argmax(P_2, axis=1)
+                                if door_img_seg_dict_reverse[P_2[0]]=='Install Door Armor - 8955':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Install Exterior Door with Frame - 8953':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Repair Door Frame - 9173':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Repaired Replace Overhead Garage Door - 2215 3047':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Replaced Door - 0514 8952':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                            else:
+                                os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks')
+                                X_2 = cv2.imread(image_file_path)
+                                X_2 = cv2.resize(X_2,(224,224))
+                                X_2  = X_2.reshape((1,224,224,3))
+                                P_2 = model_door_seg.predict(X_2)
+                                P_2 = np.argmax(P_2, axis=1)
+                                if door_img_seg_dict_reverse[P_2[0]]=='Install Door Armor - 8955':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Install Exterior Door with Frame - 8953':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Repair Door Frame - 9173':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Repaired Replace Overhead Garage Door - 2215 3047':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Replaced Door - 0514 8952':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                        
+                        elif label1_img_seg_dict_reverse[P_1[0]]=='Lawn Maintenance':
+                            if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'):
+                                X_2 = cv2.imread(image_file_path)
+                                X_2 = cv2.resize(X_2,(224,224))
+                                X_2  = X_2.reshape((1,224,224,3))
+                                P_2 = model_grass_seg.predict(X_2)
+                                P_2 = np.argmax(P_2, axis=1)
+                                if grass_img_seg_dict_reverse[P_2[0]]=='Initial Grass Cut - 2501':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Remove Vines - 2575':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Trim Shrubs - 2606':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Trim Trees - 9164':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')
+                                
+                                
+                            else:
+                                os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance')
+                                X_2 = cv2.imread(image_file_path)
+                                X_2 = cv2.resize(X_2,(224,224))
+                                X_2  = X_2.reshape((1,224,224,3))
+                                P_2 = model_grass_seg.predict(X_2)
+                                P_2 = np.argmax(P_2, axis=1)
+                                if grass_img_seg_dict_reverse[P_2[0]]=='Initial Grass Cut - 2501':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Remove Vines - 2575':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Trim Shrubs - 2606':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Trim Trees - 9164':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')
+                    else: 
+                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name)
+                        if label1_img_seg_dict_reverse[P_1[0]]=='Door Tasks':
+                            if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'):
+                                X_2 = cv2.imread(image_file_path)
+                                X_2 = cv2.resize(X_2,(224,224))
+                                X_2  = X_2.reshape((1,224,224,3))
+                                P_2 = model_door_seg.predict(X_2)
+                                P_2 = np.argmax(P_2, axis=1)
+                                if door_img_seg_dict_reverse[P_2[0]]=='Install Door Armor - 8955':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Install Exterior Door with Frame - 8953':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Repair Door Frame - 9173':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Repaired Replace Overhead Garage Door - 2215 3047':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Replaced Door - 0514 8952':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                            else:
+                                os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks')
+                                X_2 = cv2.imread(image_file_path)
+                                X_2 = cv2.resize(X_2,(224,224))
+                                X_2  = X_2.reshape((1,224,224,3))
+                                P_2 = model_door_seg.predict(X_2)
+                                P_2 = np.argmax(P_2, axis=1)
+                                if door_img_seg_dict_reverse[P_2[0]]=='Install Door Armor - 8955':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Door Armor - 8955')
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Install Exterior Door with Frame - 8953':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Install Exterior Door with Frame - 8953')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Repair Door Frame - 9173':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repair Door Frame - 9173')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Repaired Replace Overhead Garage Door - 2215 3047':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Repaired Replace Overhead Garage Door - 2215 3047')
+                                
+                                elif door_img_seg_dict_reverse[P_2[0]]=='Replaced Door - 0514 8952':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Door Tasks'+'/'+'Replaced Door - 0514 8952')
+                        
+                        elif label1_img_seg_dict_reverse[P_1[0]]=='Lawn Maintenance':
+                            if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'):
+                                X_2 = cv2.imread(image_file_path)
+                                X_2 = cv2.resize(X_2,(224,224))
+                                X_2  = X_2.reshape((1,224,224,3))
+                                P_2 = model_grass_seg.predict(X_2)
+                                P_2 = np.argmax(P_2, axis=1)
+                                if grass_img_seg_dict_reverse[P_2[0]]=='Initial Grass Cut - 2501':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Remove Vines - 2575':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Trim Shrubs - 2606':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Trim Trees - 9164':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')
+                                
+                                
+                            else:
+                                os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance')
+                                X_2 = cv2.imread(image_file_path)
+                                X_2 = cv2.resize(X_2,(224,224))
+                                X_2  = X_2.reshape((1,224,224,3))
+                                P_2 = model_grass_seg.predict(X_2)
+                                P_2 = np.argmax(P_2, axis=1)
+                                if grass_img_seg_dict_reverse[P_2[0]]=='Initial Grass Cut - 2501':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Initial Grass Cut - 2501')
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Remove Vines - 2575':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Remove Vines - 2575')
+                                
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Trim Shrubs - 2606':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Shrubs - 2606')
+                                
+                                elif grass_img_seg_dict_reverse[P_2[0]]=='Trim Trees - 9164':
+                                    if os.path.exists(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164'):
+                                        shutil.copy(image_file_path,property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')
+                                    else:
+                                        os.mkdir(property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')
+                                        shutil.copy(image_file_path, property_preservation_segregated_folder+'/'+shipment_name+'/'+'Lawn Maintenance'+'/'+'Trim Trees - 9164')                    
+                            
+        # Images Path
+        images_path = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/UnZipFolderAbsolutePath/PropertyPreservation/Segregated Images' + '/' + shipment_name
+
+        # Function to display images in a thumbnail view with a horizontal scroller
+        def display_images_in_folder(images_path):
+            # Get a list of all items in the main path (both files and folders)
+            all_items = os.listdir(images_path)
+
+            # Iterate through each item in the main path
+            for item_name in all_items:
+                item_path = os.path.join(images_path, item_name)
+
+                # Check if the item is a directory
+                if os.path.isdir(item_path):
+                    with st.expander(f"{item_name}"):
+                        # Get a list of subfolders in the current main folder
+                        subfolders = [subfolder for subfolder in os.listdir(item_path) if os.path.isdir(os.path.join(item_path, subfolder))]
+                        # Display subfolders as tabs
+                        if subfolders:
+                            selected_subfolder = st.selectbox("Select a subfolder", subfolders)
+                        else:
+                            st.warning("No subfolders found.")
+                        # Display images from the selected subfolder
+                        image_files = []
+                        subfolder_path = os.path.join(item_path, str(selected_subfolder))
+                        for root, _, files in os.walk(subfolder_path):
+                            for file in files:
+                                if file.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                                    image_files.append(os.path.join(root, file))
+
+                        # Display images one by one using PIL
+                        for image_file in image_files:
+                            image_path = os.path.join(subfolder_path, image_file)
+                            image = Image.open(image_path)
+                            st.image(image, width=100, caption=image_file)
+
+        # Call the function to display images inside folders
+        display_images_in_folder(images_path)
 
 if choice == 'Intelligence':
     st.title('Actionable Insights')
@@ -192,14 +755,157 @@ if choice == 'Intelligence':
 
     if sub_choice == 'DocumentIndexingExtraction':
         st.subheader('Extracted Entities')
-        directory_path = r'D:/Python Projects/NexDeck/NexDeck/Airflow/UnZipFolderShipment/DocumentIndexingExtraction/OCR_Text'
-        file_list = os.listdir(directory_path)
-        results = new_ner.extract_entities(file_list)
-        st.write(results)
-
+        index_results = r'D:/Python Projects/Honda-Invoice/NexDeck/results/index_extract.csv'
+        # Read the CSV file into a DataFrame
+        df = pd.read_csv(index_results, index_col=0)
+        # Display the DataFrame using st.write() or st.dataframe()
+        st.dataframe(df)
 
     if sub_choice == 'PropertyPreservation':
         st.subheader('Classified Images')
+        tab1, tab2 = st.tabs(['Correct', 'Incorrect'])
+        images_root_path = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/UnZipFolderAbsolutePath/PropertyPreservation/'
+        images_path = os.path.join(images_root_path, 'Classified Images','2111202342','Lawn Maintenance', 'Initial Grass Cut - 2501')        
+        model = label2_image_segregation_lawnmaintenance
+
+        df = pd.DataFrame({'Image_Number':[],'Actual_Label':[],'Predicted_Label':[],'Result':[]})
+
+        image_number_list = []
+        actual_label_list = []
+        predicted_label_list = []
+        result_list = []
+        image_view = []
+        correct_images = []
+        incorrect_images = []
+        correct_images_indices = []
+        incorrect_images_indices = []
+
+        count = 1
+        correct_classification_count = 0
+        mis_classification_count = 0
+
+        placeholder = st.empty()
+
+        for root, dirs, files in os.walk(images_path):
+            for f in files:
+                image_name = f
+                image_static_path = os.path.join(images_path, image_name)
+                # st.write(image_static_path)
+                image_name = image_name[:-4]
+                image_name = image_name.split('.')[0]
+                # actual_label_name = image_name[1]
+
+                if ('During'in image_name):
+                    actual_label_name = 'DURING'
+                elif ( 'during' in image_name):
+                    actual_label_name = 'DURING'
+                elif ('After'in image_name):
+                    actual_label_name = 'AFTER'
+                elif ('after' in image_name):
+                    actual_label_name = 'AFTER'
+                elif ('Before' in image_name):
+                    actual_label_name = 'BEFORE'
+                elif ('before' in image_name):
+                    actual_label_name = 'BEFORE'
+
+                # st.image(image, caption='Grass_Image')
+                # if st.button('Process'):
+                X = cv2.imread(image_static_path)
+                X = X.reshape(1, 224, 224, 3)
+
+                P = model.predict(X)
+                P = np.argmax(P, axis=1)
+
+                if actual_label_name.lower() == label_dict_reverse[P[0]].lower():
+                    # st.info('Result : Correct')
+                    result_list.append('Correct')
+                    correct_classification_count = correct_classification_count + 1
+                    # correct_indices.append(f)
+                else:
+                    # st.info('Result : Incorrect')
+                    result_list.append('Incorrect')
+                    mis_classification_count = mis_classification_count + 1
+                    # incorrect_indices.append(f)
+
+                image_number_list.append('Grass_Image_{}'.format(count))
+                # actual_label_list.append('{}_Maintainance'.format(actual_label_name.upper()))
+                actual_label_list.append('{}'.format(actual_label_name.upper()))
+
+                # predicted_label_list.append('{}_Maintainance'.format(label_dict_reverse[P[0]].upper()))
+                predicted_label_list.append('{}'.format(label_dict_reverse[P[0]].upper()))
+
+                if actual_label_name.lower() == label_dict_reverse[P[0]].lower():
+                    # correct_images_indices.append(uploaded_files.index(f))
+                    correct_images.append(image_static_path)
+
+                elif actual_label_name != label_dict_reverse[P[0]].lower():
+                    # incorrect_images_indices.append(uploaded_files.index(f))
+                    incorrect_images.append(image_static_path)
+
+
+        with tab1:
+            # Display images one by one using PIL
+            def display_images_in_folder(folder_name, images_list):
+                with st.expander(f'{folder_name}'):
+                    for image_path in images_list:
+                        image = Image.open(image_path)
+                        st.image(image, width=100, caption=os.path.basename(image_path))
+
+            # Display incorrect images in tab2
+            display_images_in_folder('Lawn Maintenance', correct_images)
+
+        with tab2:
+            # Function to display images in a thumbnail view with a horizontal scroller
+            def display_images_in_folder(folder_name, images_list):
+                with st.expander(f'{folder_name}'):
+                    for image_path in images_list:
+                        image = Image.open(image_path)
+                        st.image(image, width=100, caption=os.path.basename(image_path))
+
+            # Display incorrect images in tab2
+            display_images_in_folder('Lawn Maintenance', incorrect_images)
+
+        st.subheader('Summary Result')
+        df['Image_Number'] = image_number_list
+        df['Actual_Label'] = actual_label_list
+        df['Predicted_Label'] = predicted_label_list
+        df['Result'] = result_list
+        #df['Index'] = [f.name[0:4] for f in images_path]
+        #df.set_index('Index',inplace=True)
+        st.dataframe(df,1400, 500)
+        # Define the additional columns
+        # Define the additional columns
+        df['Sub-Task'] = [os.path.basename(os.path.dirname(image_path)) for image_path in correct_images + incorrect_images]
+        print(df['Sub-Task'])
+        df['Img_Id'] = [os.path.splitext(os.path.basename(image_path))[0] for image_path in correct_images + incorrect_images]
+        print(df['Img_Id'])
+        # Extract 'WorkOrder_Id', 'Task', and 'Sub-Task' from the image path
+        df['Task'] = [os.path.basename(os.path.dirname(os.path.dirname(image_path))) for image_path in correct_images + incorrect_images]
+        print(df['Task'])
+        df['WorkOrder_Id'] = [os.path.basename(os.path.dirname(os.path.dirname(os.path.dirname(image_path)))) for image_path in correct_images + incorrect_images]
+        print(df['WorkOrder_Id'])
+        # Print the columns before attempting to reorder them
+        print("Columns before reordering:", df.columns)
+
+        # Reorder columns with the additional columns
+        df = df[['WorkOrder_Id', 'Img_Id', 'Task', 'Sub-Task', 'Actual_Label', 'Predicted_Label', 'Result']]
+
+        # Print the columns after reordering them
+        print("Columns after reordering:", df.columns)
+
+        # Save results to CSV
+        csv_path = 'NexDeck/results/property_preserv.csv'
+        df.to_csv(csv_path, index=False)
+
+        # Specify the directory path where you have write permissions
+        json_directory = 'D:/Python Projects/Honda-Invoice/NexDeck/NoSQL'
+
+        # Combine the directory path with the JSON filename
+        json_path = os.path.join(json_directory, 'prop_preserv.json')
+
+        # Save results to JSON
+        df.to_json(json_path, orient='records', lines=True)
+
 
 if choice == 'Dashboard':
     st.title('Day-to-Day Analytics')
