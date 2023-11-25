@@ -20,6 +20,8 @@ import urllib.parse
 from PIL import Image
 import cv2
 import numpy as np
+# Import html template
+from htmltemplate import css, bot_template, user_template
 
 # 2. Generate Folder Paths
 zip_path = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/ZipFolderAbsolutePath/'
@@ -71,6 +73,36 @@ with st.sidebar:
     st.title('NexDeck')
     choice = st.radio("Features", ['Ingestion', 'Visualization', 'Intelligence', 'Dashboard'])
     st.info("NexDeck is our powerful platform providing document as well mortgage image understanding to uncover hidden actionable insights organizations need when working on their mortgage lifecycles.")
+
+
+# Define the chatbot icon HTML and CSS
+chatbot_icon = """
+<style>
+    #chat-bot-icon {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        cursor: pointer;
+        z-index: 1000;
+    }
+</style>
+<a id="chat-bot-icon" href="javascript:void(0);" onclick="toggleChat()">
+    <img src="https://play-lh.googleusercontent.com/--v5q9o2Eh3OrV0tglJbu86PsdrL18QvGSHg_TGiE9_ml3reNPQBxsxpEV7MlAfatC1o" alt="Chat Bot Icon" width="50" height="50">
+</a>
+<div id="chat-content" style="display: none;">
+    <!-- Add logic to display chat messages here -->
+</div>
+<script>
+    function toggleChat() {
+        let chatContent = document.getElementById('chat-content');
+        chatContent.style.display = (chatContent.style.display === 'none') ? 'block' : 'none';
+    }
+</script>
+"""
+# Load the CSS and chatbot icon
+st.markdown(css, unsafe_allow_html=True)
+st.markdown(chatbot_icon, unsafe_allow_html=True)
+
 
 # Define the sidebar functionalities
 if choice == 'Ingestion':
@@ -916,5 +948,26 @@ if choice == 'Dashboard':
     if sub_choice == 'DocumentIndexingExtraction':
         st.subheader('DocuChief')
 
+        # Set the height and width attributes of the iframe as percentages
+        iframe_html = (
+            '<iframe src="http://localhost:5601/app/dashboards#/view/f0b039e0-8aec-11ee-8667-3f33f0642b98?embed=true&_g=(refreshInterval:(pause:!t,value:60000),time:(from:now-15m,to:now))&_a=()" '
+            'style="height: 120svh; width: 70vw;"></iframe>'
+        )
+
+        # Embed the Kibana dashboard
+        st.markdown(iframe_html, unsafe_allow_html=True)
+
     if sub_choice == 'PropertyPreservation':
         st.subheader('NexImage')
+
+        # Set the height and width attributes of the iframe as percentages
+        iframe_html = (
+            '<iframe src="http://localhost:5601/app/dashboards#/view/c3952920-8b6e-11ee-8667-3f33f0642b98?embed=true&_g=(refreshInterval:(pause:!t,value:60000),time:(from:now-15m,to:now))&_a=()" '
+            'style="height: 85svh; width: 70vw;"></iframe>'
+        )
+
+        # Embed the Kibana dashboard
+        st.markdown(iframe_html, unsafe_allow_html=True)
+
+#if choice == 'Nexi':
+        #pass
