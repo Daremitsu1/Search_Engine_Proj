@@ -11,6 +11,8 @@ import pickle
 import json
 import imageio
 import requests
+from arcgis.learn import prepare_textdata
+from arcgis.learn.text import TextClassifier
 # Import tensorflow related libraries
 import tensorflow
 from tensorflow.keras.preprocessing.image import img_to_array
@@ -22,6 +24,11 @@ import cv2
 import numpy as np
 # Import html template
 from htmltemplate import css, bot_template, user_template
+# Import Elasticsearch and its dependencies
+import elasticsearch
+from elasticsearch import Elasticsearch
+from elasticsearch import helpers
+from elasticsearch.helpers import bulk
 
 # 2. Generate Folder Paths
 zip_path = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/ZipFolderAbsolutePath/'
@@ -65,43 +72,17 @@ def color_gen():
 colors = {ent.upper():color_gen() for ent in new_ner.entities}
 options = {"ents":[ent.upper() for ent in new_ner.entities], "colors":colors}
 
+# 4. Connect to Elasticsearch
+es = Elasticsearch(hosts = [{"host":"localhost", "port":9200, "scheme":"http"}])
+
 # Streamlit UI
 st.set_page_config(page_title="NexDeck", page_icon="https://nexval.com/wp-content/uploads/2021/06/NEX_WEB_LOGO_NEXVAL.png", layout="wide")
 
 with st.sidebar:
     st.image('https://nexval.com/wp-content/uploads/2021/06/NEX_WEB_LOGO_NEXVAL.png')
     st.title('NexDeck')
-    choice = st.radio("Features", ['Ingestion', 'Visualization', 'Intelligence', 'Dashboard'])
-    st.info("NexDeck is our powerful platform providing document as well mortgage image understanding to uncover hidden actionable insights organizations need when working on their mortgage lifecycles.")
-
-
-# Define the chatbot icon HTML and CSS
-chatbot_icon = """
-<style>
-    #chat-bot-icon {
-        position: fixed;
-        bottom: 20px;
-        right: 20px;
-        cursor: pointer;
-        z-index: 1000;
-    }
-</style>
-<a id="chat-bot-icon" href="javascript:void(0);" onclick="toggleChat()">
-    <img src="https://play-lh.googleusercontent.com/--v5q9o2Eh3OrV0tglJbu86PsdrL18QvGSHg_TGiE9_ml3reNPQBxsxpEV7MlAfatC1o" alt="Chat Bot Icon" width="50" height="50">
-</a>
-<div id="chat-content" style="display: none;">
-    <!-- Add logic to display chat messages here -->
-</div>
-<script>
-    function toggleChat() {
-        let chatContent = document.getElementById('chat-content');
-        chatContent.style.display = (chatContent.style.display === 'none') ? 'block' : 'none';
-    }
-</script>
-"""
-# Load the CSS and chatbot icon
-st.markdown(css, unsafe_allow_html=True)
-st.markdown(chatbot_icon, unsafe_allow_html=True)
+    choice = st.radio("Features", ['Ingestion', 'Visualization', 'Intelligence', 'Dashboard', 'Colab'])
+    st.info("NexDeck is our powerful platform providing documents & images to uncover hidden actionable insights organizations need when working on their mortgage lifecycles.")
 
 
 # Define the sidebar functionalities
@@ -298,7 +279,7 @@ if choice == 'Visualization':
     st.title('Data Visualization')
     
     # Choices of the Visualization
-    sub_choice = st.selectbox('Choose Visualization Option',['DocumentIndexingExtraction', 'PropertyPreservation'])
+    sub_choice = st.selectbox('Choose Visualization Option',['DocumentIndexingExtraction', 'PropertyPreservation', 'DataStandardization'])
 
     if sub_choice == 'DocumentIndexingExtraction':
         st.subheader('List of Documents')
@@ -779,6 +760,26 @@ if choice == 'Visualization':
         # Call the function to display images inside folders
         display_images_in_folder(images_path)
 
+    if sub_choice == 'DataStandardization':
+        st.subheader('Data Correction and Standardization')
+        filepath = r'D:/Python Projects/ATOM_Projects/textclassifier/country_classifier'
+
+        DATA_ROOT = Path(os.path.join(os.path.splitext(filepath)[0]))
+
+        data = prepare_textdata(DATA_ROOT, "classification", train_file="house-addresses.csv", 
+                                text_columns="Address", label_columns="Country", batch_size=64)
+        
+        emd_path = os.path.join('NexDeck', 'models', 'attom','country-classifier', "country-classifier.emd")
+        model = TextClassifier.from_model(emd_path)
+        text_list = data._train_df.sample(15).Address.values
+        result = model.predict(text_list)
+
+        df = pd.DataFrame(result, columns=["Address", "CountryCode", "Confidence"])
+
+        df.style.set_table_styles([dict(selector='th', props=[('text-align', 'left')])])\
+                .set_properties(**{'text-align': "left"}).hide_index()
+        st.write(df)
+
 if choice == 'Intelligence':
     st.title('Actionable Insights')
     
@@ -969,5 +970,233 @@ if choice == 'Dashboard':
         # Embed the Kibana dashboard
         st.markdown(iframe_html, unsafe_allow_html=True)
 
-#if choice == 'Nexi':
-        #pass
+if choice == 'Colab':
+    st.subheader('Let\'s Chat with your mortgage documents!')
+
+    # Choices of the Visualization
+    sub_choice = st.selectbox('Choose Chatting Option',['DocumentIndexingExtraction', 'PropertyPreservation'])
+    
+    st.write(css, unsafe_allow_html=True)
+
+    user_question = st.text_input('Ask a question about the documents: 👨🏻‍💻')
+
+    def extract_field_from_doc_question(question):
+        # Define a mapping of common keywords to fields
+        keyword_to_field = {
+            'buyer': 'Buyer',
+            'seller': 'Seller',
+            'date': 'Recording Date',
+            'jobs': 'Job_Id',
+            'docs': 'Doc_Id',
+            'documents': 'Doc_Id',
+            'text': 'TEXT',
+            'number': 'Recording Number',
+            'type': 'Doc Type',
+            'record date': 'Recording Date',
+            'job': 'Job_Id',
+            'document': 'Doc_Id',
+            'recording': 'Recording Number',
+            'doc type': 'Doc Type',
+            'recording date': 'Recording Date',
+            'document type': 'Doc Type',
+            'buyer name': 'Buyer',
+            'seller name': 'Seller',
+            'purchase date': 'Recording Date',
+            'work order': 'Job_Id',
+            'file': 'Doc_Id',
+            'file type': 'Doc Type',
+            'content': 'TEXT',
+            'transaction date': 'Recording Date',
+            'seller info': 'Seller',
+            'buyer info': 'Buyer',
+            'transaction type': 'Doc Type',
+            'text content': 'TEXT',
+            'identification': 'Recording Number',
+            'file number': 'Doc_Id',
+            'text document': 'TEXT',
+            'seller document': 'Seller',
+            'buyer document': 'Buyer',
+            'document content': 'TEXT',
+            'record number': 'Recording Number',
+            'recorded date': 'Recording Date',
+            'work identifier': 'Job_Id',
+            'file identifier': 'Doc_Id',
+            'document identifier': 'Doc_Id',
+            'file content': 'TEXT',
+            'transaction number': 'Recording Number',
+            'transaction type': 'Doc Type',
+            'document text': 'TEXT',
+            # Add more mappings as needed
+        }
+
+
+        # Convert the question to lowercase for case-insensitive matching
+        question_lower = question.lower()
+
+        # Check if any keyword matches the question
+        for keyword, field in keyword_to_field.items():
+            if keyword in question_lower:
+                return field
+
+        # If no matching keyword is found, return None
+        return None
+
+    if sub_choice == 'DocumentIndexingExtraction':
+        if st.button('Submit Question'):
+            with st.spinner('Processing'):
+                # Extract the field mentioned in the user's question (e.g., 'Buyer', 'Seller', etc.)
+                field_mentioned = extract_field_from_doc_question(user_question)
+
+                # Check if a valid field is mentioned
+                if field_mentioned:
+                    # Perform an aggregation query for unique values of the extracted field
+                    # Replace 'index_extract' with the actual index you want to query
+                    result_aggregation = es.search(index='index_extract', body={
+                        "size": 0,
+                        "aggs": {
+                            "unique_values": {
+                                "terms": {
+                                    "field": f"{field_mentioned}.keyword",
+                                    "size": 20  # Adjust the size based on your requirements
+                                }
+                            }
+                        }
+                    })
+
+                    # Extract the unique values from the aggregation result
+                    unique_values = [bucket['key'] for bucket in result_aggregation['aggregations']['unique_values']['buckets']]
+
+
+                    # Display the user question in user_template
+                    st.write(user_template.replace("{{MSG}}", f"{user_question}"), unsafe_allow_html=True)
+
+                    # Display the unique values as a response in bot_template
+                    if unique_values:
+                        # Format the unique values with a newline after "Thank you for your patience!"
+                        formatted_values = '\n'.join(map(str, unique_values))
+
+                        # Display the response without brackets
+                        st.write(bot_template.replace("{{MSG}}", f"Thank you for your patience!\nThe {field_mentioned} are:\n{formatted_values}"), unsafe_allow_html=True)
+                    else:
+                        # Display the response without brackets
+                        st.write(bot_template.replace("{{MSG}}", f"Sorry! No {field_mentioned} values found. Please retry with a different question."), unsafe_allow_html=True)
+
+    def extract_field_from_img_question(question):
+        # Define a mapping of common keywords to fields
+        keyword_to_field = {
+            'actual label': 'Actual_Label',
+            'predicted label': 'Predicted_Label',
+            'result': 'Result',
+            'sub-task': 'Sub-Task',
+            'task': 'Task',
+            'work order': 'WorkOrder_Id',
+            'label actual': 'Actual_Label',
+            'label predicted': 'Predicted_Label',
+            'outcome': 'Result',
+            'subtask': 'Sub-Task',
+            'task identifier': 'Task',
+            'order of work': 'WorkOrder_Id',
+            'actual outcome': 'Actual_Label',
+            'anticipated label': 'Predicted_Label',
+            'task result': 'Result',
+            'subordinate task': 'Sub-Task',
+            'job': 'Task',
+            'work identifier': 'WorkOrder_Id',
+            'expected outcome': 'Predicted_Label',
+            'assigned task': 'Task',
+            'order for work': 'WorkOrder_Id',
+            'outcome label': 'Result',
+            'subsequent task': 'Sub-Task',
+            'work task': 'Task',
+            'work assignment': 'WorkOrder_Id',
+            'label from actual': 'Actual_Label',
+            'predicted outcome': 'Predicted_Label',
+            'resultant effect': 'Result',
+            'underlying task': 'Sub-Task',
+            'assigned job': 'Task',
+            'job order': 'WorkOrder_Id',
+            'label as per actual': 'Actual_Label',
+            'prediction label': 'Predicted_Label',
+            'end result': 'Result',
+            'subordinate assignment': 'Sub-Task',
+            'task to perform': 'Task',
+            'work identification': 'WorkOrder_Id',
+            'actual label value': 'Actual_Label',
+            'predicted value label': 'Predicted_Label',
+            'final result': 'Result',
+            'task in question': 'Task',
+            'assigned work order': 'WorkOrder_Id',
+            'actual value of label': 'Actual_Label',
+            'label predicted by model': 'Predicted_Label',
+            'resulting outcome': 'Result',
+            'associated sub-task': 'Sub-Task',
+            'task at hand': 'Task',
+            'identification of work order': 'WorkOrder_Id',
+            'label from observation': 'Actual_Label',
+            'model prediction label': 'Predicted_Label',
+            'outcome determination': 'Result',
+            'subordinate job': 'Sub-Task',
+            'task assignment': 'Task',
+            'identifiable work order': 'WorkOrder_Id',
+            'label derived from actual': 'Actual_Label',
+            'predicted label value': 'Predicted_Label',
+            'result achieved': 'Result',
+            'assigned sub-task': 'Sub-Task',
+            'assigned task order': 'Task',
+            'unique work order identifier': 'WorkOrder_Id',
+            # Add more variations as needed
+        }
+
+
+        # Convert the question to lowercase for case-insensitive matching
+        question_lower = question.lower()
+
+        # Check if any keyword matches the question
+        for keyword, field in keyword_to_field.items():
+            if keyword in question_lower:
+                return field
+
+        # If no matching keyword is found, return None
+        return None
+
+    if sub_choice == 'PropertyPreservation':
+        if st.button('Submit Question'):
+            with st.spinner('Processing'):
+                # Extract the field mentioned in the user's question (e.g., 'Buyer', 'Seller', etc.)
+                field_mentioned = extract_field_from_img_question(user_question)
+
+                # Check if a valid field is mentioned
+                if field_mentioned:
+                    # Perform an aggregation query for unique values of the extracted field
+                    # Replace 'index_extract' with the actual index you want to query
+                    result_aggregation = es.search(index='prop_preserv', body={
+                        "size": 0,
+                        "aggs": {
+                            "unique_values": {
+                                "terms": {
+                                    "field": f"{field_mentioned}.keyword",
+                                    "size": 20  # Adjust the size based on your requirements
+                                }
+                            }
+                        }
+                    })
+
+                    # Extract the unique values from the aggregation result
+                    unique_values = [bucket['key'] for bucket in result_aggregation['aggregations']['unique_values']['buckets']]
+
+
+                    # Display the user question in user_template
+                    st.write(user_template.replace("{{MSG}}", f"{user_question}"), unsafe_allow_html=True)
+
+                    # Display the unique values as a response in bot_template
+                    if unique_values:
+                        # Format the unique values with a newline after "Thank you for your patience!"
+                        formatted_values = '\n'.join(map(str, unique_values))
+
+                        # Display the response without brackets
+                        st.write(bot_template.replace("{{MSG}}", f"Thank you for your patience!\nThe {field_mentioned} are:\n{formatted_values}"), unsafe_allow_html=True)
+                    else:
+                        # Display the response without brackets
+                        st.write(bot_template.replace("{{MSG}}", f"Sorry! No {field_mentioned} values found. Please retry with a different question."), unsafe_allow_html=True)
+
+
