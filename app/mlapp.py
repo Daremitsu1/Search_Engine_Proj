@@ -1,6 +1,6 @@
 # Import Dependencies
 import streamlit as st
-import os
+import os, torch
 import shutil
 import zipfile
 from pathlib import Path
@@ -12,7 +12,7 @@ import json
 import imageio
 import requests
 from arcgis.learn import prepare_textdata
-from arcgis.learn.text import TextClassifier
+from arcgis.learn.text import TextClassifier, SequenceToSequence
 # Import tensorflow related libraries
 import tensorflow
 from tensorflow.keras.preprocessing.image import img_to_array
@@ -58,6 +58,9 @@ model_label1_seg = load_model('D:/Python Projects/Honda-Invoice/NexDeck/models/p
 model_door_seg = load_model('D:/Python Projects/Honda-Invoice/NexDeck/models/prop_preserv/pp_image_segregation_doortask.h5')
 model_grass_seg = load_model('D:/Python Projects/Honda-Invoice/NexDeck/models/prop_preserv/pp_image_segregation_lawnmaintenancetask.h5')
 
+# Text/Sequence Models
+text_model = os.path.join('NexDeck', 'models', 'attom','country-classifier', "country-classifier.emd")
+
 # Lets load the spaCy model for use now
 with open("doc_extract.pickle", "rb") as f:
     new_ner = pickle.load(f)
@@ -81,6 +84,7 @@ st.set_page_config(page_title="NexDeck", page_icon="https://nexval.com/wp-conten
 with st.sidebar:
     st.image('https://nexval.com/wp-content/uploads/2021/06/NEX_WEB_LOGO_NEXVAL.png')
     st.title('NexDeck')
+    selection = st.selectbox('Select a Project',['DocumentIndexingExtraction', 'PropertyPreservation', 'DataStandardization'])
     choice = st.radio("Features", ['Ingestion', 'Visualization', 'Intelligence', 'Dashboard', 'Colab'])
     st.info("NexDeck is our powerful platform providing documents & images to uncover hidden actionable insights organizations need when working on their mortgage lifecycles.")
 
@@ -279,9 +283,9 @@ if choice == 'Visualization':
     st.title('Data Visualization')
     
     # Choices of the Visualization
-    sub_choice = st.selectbox('Choose Visualization Option',['DocumentIndexingExtraction', 'PropertyPreservation', 'DataStandardization'])
+    #sub_choice = st.selectbox('Choose Visualization Option',['DocumentIndexingExtraction', 'PropertyPreservation', 'DataStandardization'])
 
-    if sub_choice == 'DocumentIndexingExtraction':
+    if selection == 'DocumentIndexingExtraction':
         st.subheader('List of Documents')
         shipment_name = os.listdir(doc_indexing_ingested_folder)[0]
         print('Shipment Name:', shipment_name)
@@ -402,7 +406,7 @@ if choice == 'Visualization':
             all_df.to_json(json_path, orient='records', lines=True)
 
 
-    if sub_choice == 'PropertyPreservation':
+    if selection == 'PropertyPreservation':
         st.subheader('Segregated Images')
         shipment_name = os.listdir(property_preservation_ingested_folder)[0]
         image_files = os.listdir(property_preservation_ingested_folder+'/'+shipment_name)
@@ -760,33 +764,44 @@ if choice == 'Visualization':
         # Call the function to display images inside folders
         display_images_in_folder(images_path)
 
-    if sub_choice == 'DataStandardization':
-        st.subheader('Data Correction and Standardization')
-        filepath = r'D:/Python Projects/ATOM_Projects/textclassifier/country_classifier'
+    if selection == 'DataStandardization':
+        st.subheader('Data Completion and Correction/Standardization')
+        data_selection = st.selectbox('Features', ['DataCompletion', 'DataCorrection'])
+        if data_selection == 'DataCompletion':
+            emd_path = os.path.join('NexDeck', 'models', 'attom','country-classifier', "country-classifier.emd")
+            model = TextClassifier.from_model(emd_path)
+            # Create a text input and get the user's query
+            query = st.text_area(""" """)
+            # Check if the user has entered a query
+            if query:
+                # Assuming 'model' has a predict method
+                single_result = model.predict(query)
+                st.write(single_result)
+            else:
+                st.warning("Please enter a query.")
 
-        DATA_ROOT = Path(os.path.join(os.path.splitext(filepath)[0]))
+        if data_selection == 'DataCorrection':
+            seq_emd_path = os.path.join('NexDeck', 'models', 'attom', 'seq2seq_bleu', 'seq2seq_bleu.emd')
+            model = SequenceToSequence.from_model(seq_emd_path)
+            # Create a text input and get the user's query
+            query = st.text_area(""" """)
+            # Check if the user has entered a query
+            if query:
+                # Assuming 'model' has a predict method
+                single_result = model.predict(query, num_beams=6, max_length=50)
+                st.info('Non-Standard → Standard , Error → Correction')
+                st.write(single_result[0][1])
+            else:
+                st.warning("Please enter a query.")
 
-        data = prepare_textdata(DATA_ROOT, "classification", train_file="house-addresses.csv", 
-                                text_columns="Address", label_columns="Country", batch_size=64)
-        
-        emd_path = os.path.join('NexDeck', 'models', 'attom','country-classifier', "country-classifier.emd")
-        model = TextClassifier.from_model(emd_path)
-        text_list = data._train_df.sample(15).Address.values
-        result = model.predict(text_list)
-
-        df = pd.DataFrame(result, columns=["Address", "CountryCode", "Confidence"])
-
-        df.style.set_table_styles([dict(selector='th', props=[('text-align', 'left')])])\
-                .set_properties(**{'text-align': "left"}).hide_index()
-        st.write(df)
 
 if choice == 'Intelligence':
     st.title('Actionable Insights')
     
     # Choices of the Visualization
-    sub_choice = st.selectbox('Choose Extraction-Classification Option',['DocumentIndexingExtraction', 'PropertyPreservation'])
+    #sub_choice = st.selectbox('Choose Extraction-Classification Option',['DocumentIndexingExtraction', 'PropertyPreservation'])
 
-    if sub_choice == 'DocumentIndexingExtraction':
+    if selection == 'DocumentIndexingExtraction':
         st.subheader('Extracted Entities')
         index_results = r'D:/Python Projects/Honda-Invoice/NexDeck/results/index_extract.csv'
         # Read the CSV file into a DataFrame
@@ -794,7 +809,7 @@ if choice == 'Intelligence':
         # Display the DataFrame using st.write() or st.dataframe()
         st.dataframe(df)
 
-    if sub_choice == 'PropertyPreservation':
+    if selection == 'PropertyPreservation':
         st.subheader('Classified Images')
         tab1, tab2 = st.tabs(['Correct', 'Incorrect'])
         images_root_path = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/UnZipFolderAbsolutePath/PropertyPreservation/'
@@ -939,14 +954,95 @@ if choice == 'Intelligence':
         # Save results to JSON
         df.to_json(json_path, orient='records', lines=True)
 
+    if selection == 'DataStandardization':
+        data_choices = st.selectbox("Select a Feature",['DataCompletion', 'DataCorrection'])
+        if data_choices == 'DataCompletion':
+            folder_path = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/UnZipFolderAbsolutePath/DataStandardization/DataCompletion/IngestedFiles/2111202342'
+            #st.write('Code running for now..')
+            # List all files in the directory
+            file_list = [os.path.join(folder_path, file) for file in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, file))]
+            # Extract file names from full paths
+            file_names = [os.path.basename(file) for file in file_list]
+            # Dropdown to select a file
+            selected_file_name = st.selectbox("Select a file", file_names)
+            # Dropdown to select a file
+            selected_file = os.path.join(folder_path, selected_file_name)
+            # Read the selected file into a DataFrame
+            df = pd.read_csv(selected_file)
+            #st.write(df)
+            emd_path = os.path.join('NexDeck', 'models', 'attom', 'country-classifier', 'country-classifier.emd')
+            model = TextClassifier.from_model(emd_path)
+            # State variable to track whether the model has been run for the current file
+            model_run_for_current_file = False
+            if st.button('TextClassification'):
+                # Get addresses from the CSV File
+                text_list = df['Address'].values
+                # Make predictions for 'CountryCode' and 'Confidence'
+                new_predictions = model.predict(text_list)
+                # Create a DataFrame with the results
+                new_results_df = pd.DataFrame(new_predictions, columns=["Address", "CountryCode", "Confidence"])
+                # Save the new DataFrame to a CSV file
+                new_results_df.to_csv("D:/Python Projects/Honda-Invoice/NexDeck/results/data_completed.csv", index=False)  # Replace with your desired output file path
+                # Set the state variable to True
+                model_run_for_current_file = True
+                # Display the results
+                st.subheader("Predicted CountryCode and Confidence for New Addresses")
+                st.write(new_results_df)
+            else:
+                file_path = "D:/Python Projects/Honda-Invoice/NexDeck/results/data_completed.csv"
+                result_df = pd.read_csv(file_path)
+                st.write(result_df)
+
+        if data_choices == 'DataCorrection':
+            folder_path = 'D:/Python Projects/Honda-Invoice/Airflow/NexDeck/UnZipFolderAbsolutePath/DataStandardization/DataCorrection/IngestedFiles/2111202342'
+            #st.write(df)
+            emd_path = os.path.join('NexDeck', 'models', 'attom', 'seq2seq_bleu', 'seq2seq_bleu.emd')
+            model = SequenceToSequence.from_model(emd_path)
+            # List all files in the directory
+            file_list = [os.path.join(folder_path, file) for file in os.listdir(folder_path) if os.path.isfile(os.path.join(folder_path, file))]
+            # Extract file names from full paths
+            file_names = [os.path.basename(file) for file in file_list]
+            # Dropdown to select a file
+            selected_file_name = st.selectbox("Select a file", file_names)
+            # Dropdown to select a file
+            selected_file = os.path.join(folder_path, selected_file_name)
+            # Read the selected file into a DataFrame
+            df = pd.read_csv(selected_file)
+            # Assuming 'non-std-address' is the column containing addresses
+            addresses_column = 'non-std-address'
+            # Display the results
+            st.subheader("Address Standardization and Correction")
+            # Run the ML code
+            if st.button('Run Seq2Seq'):
+                # Perform predictions on the 'non-std-address' column
+                if addresses_column in df.columns:
+                    # Convert the column to a list before making predictions
+                    address_list = df[addresses_column].astype(str).tolist()
+                    # Make predictions for 'CountryCode' and 'Confidence'
+                    new_predictions = model.predict(address_list, num_beams=6, max_length=50)
+                    # Unpack the tuples in new_predictions
+                    std_addresses = [pred[1] for pred in new_predictions]
+                    # Create a DataFrame with the results
+                    new_results_df = pd.DataFrame({ "std-address": std_addresses })
+                    # Concatenate the original DataFrame with the new results
+                    final_df = pd.concat([df, new_results_df], axis=1)
+                    # Save the dataframe
+                    final_df.to_csv("D:/Python Projects/Honda-Invoice/NexDeck/results/data_standardized_corrected.csv", index=False)
+                    # Display the final DataFrame
+                    st.write("DataFrame with Predictions:")
+                    st.write(final_df)
+            else:
+                seq_file_path = "D:/Python Projects/Honda-Invoice/NexDeck/results/data_standardized_corrected.csv"
+                seq_results_df = pd.read_csv(seq_file_path)
+                st.dataframe(seq_results_df)
 
 if choice == 'Dashboard':
     st.title('Day-to-Day Analytics')
     
     # Choices of the Visualization
-    sub_choice = st.selectbox('Choose Analytics Dashboard',['DocumentIndexingExtraction', 'PropertyPreservation'])
+    #sub_choice = st.selectbox('Choose Analytics Dashboard',['DocumentIndexingExtraction', 'PropertyPreservation'])
 
-    if sub_choice == 'DocumentIndexingExtraction':
+    if selection == 'DocumentIndexingExtraction':
         st.subheader('DocuChief')
 
         # Set the height and width attributes of the iframe as percentages
@@ -958,7 +1054,7 @@ if choice == 'Dashboard':
         # Embed the Kibana dashboard
         st.markdown(iframe_html, unsafe_allow_html=True)
 
-    if sub_choice == 'PropertyPreservation':
+    if selection == 'PropertyPreservation':
         st.subheader('NexImage')
 
         # Set the height and width attributes of the iframe as percentages
@@ -974,7 +1070,7 @@ if choice == 'Colab':
     st.subheader('Let\'s Chat with your mortgage documents!')
 
     # Choices of the Visualization
-    sub_choice = st.selectbox('Choose Chatting Option',['DocumentIndexingExtraction', 'PropertyPreservation'])
+    #sub_choice = st.selectbox('Choose Chatting Option',['DocumentIndexingExtraction', 'PropertyPreservation'])
     
     st.write(css, unsafe_allow_html=True)
 
