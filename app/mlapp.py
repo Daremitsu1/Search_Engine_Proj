@@ -22,6 +22,8 @@ import urllib.parse
 from PIL import Image
 import cv2
 import numpy as np
+# Import transformers
+from transformers import BertTokenizer, BertForSequenceClassification, AdamW
 # Import html template
 from htmltemplate import css, bot_template, user_template
 # Import Elasticsearch and its dependencies
@@ -57,6 +59,9 @@ label2_image_segregation_lawnmaintenance = load_model('models/property_preservat
 model_label1_seg = load_model('D:/Python Projects/Honda-Invoice/NexDeck/models/prop_preserv/pp_image_segregation_label1.h5')
 model_door_seg = load_model('D:/Python Projects/Honda-Invoice/NexDeck/models/prop_preserv/pp_image_segregation_doortask.h5')
 model_grass_seg = load_model('D:/Python Projects/Honda-Invoice/NexDeck/models/prop_preserv/pp_image_segregation_lawnmaintenancetask.h5')
+# Load the model for doc-indexing
+index_model = BertForSequenceClassification.from_pretrained("NexDeck/models/docindex")
+index_tokenizer = BertTokenizer.from_pretrained("NexDeck/models/docindex")
 
 # Text/Sequence Models
 text_model = os.path.join('NexDeck', 'models', 'attom','country-classifier', "country-classifier.emd")
@@ -82,10 +87,26 @@ es = Elasticsearch(hosts = [{"host":"localhost", "port":9200, "scheme":"http"}])
 st.set_page_config(page_title="NexDeck", page_icon="https://nexval.com/wp-content/uploads/2021/06/NEX_WEB_LOGO_NEXVAL.png", layout="wide")
 
 with st.sidebar:
+    st.markdown(
+    """
+    <style>
+        [data-testid=stSidebar] [data-testid=stImage]{
+            text-align: center;
+            display: block;
+            margin-left: auto;
+            margin-right: auto;
+            width: 100%;
+        }
+    </style>
+    """, unsafe_allow_html=True
+    )
     st.image('https://nexval.com/wp-content/uploads/2021/06/NEX_WEB_LOGO_NEXVAL.png')
-    st.title('NexDeck')
+    st.markdown("<h1 style='text-align: center; color: white;'>NexDeck</h1>",
+                unsafe_allow_html=True)
+    
     selection = st.selectbox('Select a Project',['DocumentIndexingExtraction', 'PropertyPreservation', 'DataStandardization'])
-    choice = st.radio("Features", ['Ingestion', 'Visualization', 'Intelligence', 'Dashboard', 'Colab'])
+    choice = st.radio("Features", [
+                      'Ingestion', 'Visualization', 'Intelligence', 'Dashboard', 'Colab'])
     st.info("NexDeck is our powerful platform providing documents & images to uncover hidden actionable insights organizations need when working on their mortgage lifecycles.")
 
 
@@ -341,9 +362,30 @@ if choice == 'Visualization':
         file_list = os.listdir(directory_path)
         selected_file = st.selectbox("Select a file to visualize entities", file_list)
         
+        # Create a dropdown for DocType
+        doc_types = ['D', 'F', 'I', 'M']
+
         if selected_file:
             st.write("You selected file:", selected_file)   
-            model_folder = os.path.join('NexDeck','models','docindexextract')
+            model_folder = os.path.join('NexDeck','models','docextract')
+            input_encoding = index_tokenizer(selected_file, truncation=True, padding=True, return_tensors='pt')
+
+            # Make predictions
+            index_model.eval()
+            with torch.no_grad():
+                output = index_model(input_encoding['input_ids'], attention_mask=input_encoding['attention_mask'])
+                logits = output[0]
+                pred_label = torch.argmax(logits, dim=1).item()
+
+            # Map the predicted label to the original DocType
+            selected_doc_type = doc_types[pred_label]
+
+            # Automatically set the dropdown value
+            st.selectbox("Select DocType", doc_types, index=doc_types.index(selected_doc_type))
+            
+            # Display the selected DocType
+            st.write(f"Predicted DocType: {selected_doc_type}")
+
             nlp = spacy.load(model_folder)
             
             file_path = os.path.join(directory_path, selected_file)
